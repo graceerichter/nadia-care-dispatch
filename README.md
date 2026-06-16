@@ -1,5 +1,7 @@
 # Nadia Care · Dispatch
 
+Video Walkthrough: https://drive.google.com/file/d/1HqI_RgvwasrVIdfKPGidR4N-xJUdyoZ3/view?usp=sharing
+
 A capacity-aware task-routing prototype for a maternal-health care team:
 intake → AI triage → auto-assignment by role / availability / weighted load →
 critical-task alert with ack-or-escalate → supervisor view with an hourly
