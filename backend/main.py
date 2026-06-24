@@ -1,114 +1,185 @@
-"""FastAPI app for Nadia Care dispatch.
-
-Thin wrapper over triage.py and dispatch.py. The endpoints are stateless: the
-frontend holds the working queue and sends it in for /assign and /report. In a
-real deployment, swap that for ClickUp as the system of record.
-
-Run locally:  uvicorn main:app --reload
-"""
-from __future__ import annotations
-
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
+from typing import List, Optional
+import datetime
+from fastapi.middleware.cors import CORSMiddleware
 
-import dispatch
-import triage as triage_mod
+app = FastAPI(title="Nadia Care Maternal Navigation Dispatch API")
 
-app = FastAPI(title="Nadia Care Dispatch")
-
-# allow the Vite dev server (and your deployed frontend) to call this API
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # tighten to your frontend's domain in production
+    allow_origins=["http://localhost:5173"],
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-class AthenaADTPayload(BaseModel):
-    patient_name: str
-    event_type: str
-    facility: str
-    notes: str
-    now: int = 480
+TEAM = [
+    {"id": "sup1", "name": "Elena R.", "role": "Maternity Navigator Supervisor"},
+    {"id": "sr1", "name": "Sarah K.", "role": "Senior Maternity Navigator"},
+    {"id": "sr2", "name": "Michael T.", "role": "Senior Maternity Navigator"},
+    {"id": "nav1", "name": "Aisha K.", "role": "Maternity Navigator"},
+    {"id": "nav2", "name": "Sofia L.", "role": "Maternity Navigator"},
+    {"id": "nav3", "name": "Jordan P.", "role": "Maternity Navigator"},
+    {"id": "nav4", "name": "Priya M.", "role": "Maternity Navigator"},
+    {"id": "nav5", "name": "Carlos D.", "role": "Maternity Navigator"},
+    {"id": "nav6", "name": "Faith W.", "role": "Maternity Navigator"},
+]
 
-class TriageIn(BaseModel):
+# Shared Global System Simulation State
+SYSTEM_CLOCK = {"current_minute": 540}  # Starts at 9:00 AM (540 minutes)
+
+# EXPANDED DATA CONTRACT SCHEMA: Hardcoding taxonomy objects straight into database objects
+class InboundPayload(BaseModel):
+    source: str  # athena_ehr, spruce_health, hubspot_crm
     text: str
 
+class TransferRequest(BaseModel):
+    target_queue_id: str
+    authorized_by: str
 
-class AssignIn(BaseModel):
-    task: dispatch.Task
-    tasks: list[dispatch.Task] = []
-    now: int = 540
+class ResolutionRequest(BaseModel):
+    resolved_by: str
+    notes: str
 
+class TickRequest(BaseModel):
+    minutes: int
 
-class TickIn(BaseModel):
-    tasks: list[dispatch.Task]
-    now: int
+class TaskModel(BaseModel):
+    id: int
+    member: str
+    source: str
+    category: str
+    urgency: str
+    summary: str
+    assignedTo: str
+    status: str
+    createdMin: int
+    resolutionNotes: Optional[str] = ""
+    resolvedBy: Optional[str] = None
+    externalTransferLog: Optional[dict] = None
+    # MULTI-DIMENSIONAL TAGS CONSTRAINTS
+    market: str        # GA, TX, FL
+    lifecycle: str     # first_trimester, second_trimester, third_trimester, postpartum
+    payer: str         # medicaid, commercial
 
-
-class ReportIn(BaseModel):
-    tasks: list[dispatch.Task]
-    now: int
-
-
-@app.get("/api/health")
-def health():
-    return {"ok": True}
-
+TASKS_DB: List[TaskModel] = []
+SEED_COUNTER = 100
 
 @app.get("/api/team")
-def team():
-    return dispatch.TEAM
+def get_maternity_roster():
+    return TEAM
 
+# FIRES BOTH: Acts as a clean fallback for standard queue fetches and report analytics checks
+@app.get("/api/report")
+@app.get("/api/tasks")
+def get_active_queue(role: Optional[str] = "supervisor"):
+    if role == "supervisor":
+        return TASKS_DB
+    return [t for t in TASKS_DB if t.assignedTo == role]
 
-@app.post("/api/triage")
-async def post_triage(body: TriageIn):
-    return await triage_mod.triage(body.text)
-
-
-@app.post("/api/assign")
-def post_assign(body: AssignIn):
-    """Pick the best-fit person for a task given the current queue."""
-    person = dispatch.best_assignee(body.task, body.tasks, body.now)
-    if not person:
-        return {"assigned_to": None, "rationale": "No eligible person on shift; needs supervisor."}
-    return {
-        "assigned_to": person.id,
-        "name": person.name,
-        "rationale": (f"{person.name} ({person.role}) chosen: eligible, on shift, "
-                      f"current load {dispatch.load_of(person.id, body.tasks)}."),
-    }
-
-
-@app.post("/api/tick")
-def post_tick(body: TickIn):
-    """Advance the clock: run the ack-or-escalate sweep and return updated tasks."""
-    tasks = [t.model_copy(deep=True) for t in body.tasks]
-    log = dispatch.escalation_sweep(tasks, body.now)
-    return {"tasks": tasks, "log": log}
-
-
-@app.post("/api/report")
-def post_report(body: ReportIn):
-    return dispatch.compute_report(body.tasks, body.now)
+# ALIGNED GATEWAY: Intercepts Athena EHR webhooks sent from the React intake form
 @app.post("/api/webhooks/athena/adt")
-def athena_adt_webhook(payload: AthenaADTPayload):
-    """
-    Ingests mock HL7 ADT feeds from Athena EHR.
-    Converts the structured machine payload directly into a dispatch task.
-    """
-    # 1. Parse the incoming EHR payload into a standard Task
-    new_task = dispatch.parse_adt_to_task(
-        patient_name=payload.patient_name,
-        event_type=payload.event_type,
-        notes=f"Facility: {payload.facility}. {payload.notes}",
-        current_min=payload.now
-    )
+@app.post("/api/webhooks/intake")
+def handle_webhook_intake(payload: InboundPayload):
+    global SEED_COUNTER
+    SEED_COUNTER += 1
+    
+    t = payload.text.lower()
+    
+    # 1. Base Classifications Vector
+    cat = "care_navigation"
+    urg = "routine"
+    if any(x in t for x in ["kill", "hurt", "depression", "panicking", "overwhelmed"]):
+        cat = "behavioral_health"
+        urg = "critical" if ("kill" in t or "hurt" in t) else "high"
+    elif any(x in t for x in ["bleed", "blood", "pain", "fever", "cramping"]):
+        cat = "clinical_concern"
+        urg = "critical" if ("heavy" in t or "severe" in t) else "high"
+    elif any(x in t for x in ["ride", "transport", "bus", "car"]):
+        cat = "transportation"
+        urg = "high"
+    elif any(x in t for x in ["food", "hungry", "wic", "formula", "groceries"]):
+        cat = "nutrition"
+        urg = "high"
+    elif any(x in t for x in ["eviction", "landlord", "rent", "housing", "electricity", "utility"]):
+        cat = "housing"
+        urg = "high"
 
-    # 2. Return the task so the frontend or system of record can ingest it
-    return {
-        "status": "success",
-        "source": "Athena EHR Webhook",
-        "task": new_task.model_dump()
-    }
+    # 2. DETECTING NEW TAXONOMY STRINGS (Simulating Natural Language Parsing)
+    market_tag = "GA"
+    if any(x in t for x in ["texas", "houston", "austin", "tx"]): market_tag = "TX"
+    elif any(x in t for x in ["florida", "miami", "fl"]): market_tag = "FL"
+
+    lifecycle_tag = "second_trimester"
+    if any(x in t for x in ["weeks", " trimester", "pregnant"]):
+        if any(x in t for x in ["35", "36", "37", "38", "39", "40", "third"]): lifecycle_tag = "third_trimester"
+        elif any(x in t for x in ["8", "10", "12", "first"]): lifecycle_tag = "first_trimester"
+    elif any(x in t for x in ["born", "delivered", "baby here", "postpartum", "days old"]):
+        lifecycle_tag = "postpartum"
+
+    payer_tag = "commercial"
+    if any(x in t for x in ["medicaid", "careplan", "state insurance"]):
+        payer_tag = "medicaid"
+
+    # 3. Dynamic Capacity Balancer
+    navigators = [m["id"] for m in TEAM if m["id"].startswith("nav")]
+    load_map = {nav_id: 0 for nav_id in navigators}
+    for task in TASKS_DB:
+        if task.status in ["assigned", "in_progress", "awaiting_ack"] and task.assignedTo in load_map:
+            load_map[task.assignedTo] += 1
+    best_assignee = min(load_map, key=load_map.get) if navigators else "nav1"
+
+    new_task = TaskModel(
+        id=int(datetime.datetime.now().timestamp()),
+        member=f"Member #{4900 + (SEED_COUNTER % 90)}",
+        source=payload.source,
+        category=cat,
+        urgency=urg,
+        summary=payload.text,
+        assignedTo=best_assignee,
+        status="awaiting_ack" if urg == "critical" else "assigned",
+        createdMin=SYSTEM_CLOCK["current_minute"],
+        market=market_tag,
+        lifecycle=lifecycle_tag,
+        payer=payer_tag
+    )
+    TASKS_DB.insert(0, new_task)
+    return {"status": "success", "allocated_to": best_assignee, "task": new_task}
+
+# SYSTEM TIME SIMULATION TASK WATCHDOG PIPELINE
+@app.post("/api/tick")
+def process_system_time_step(req: TickRequest):
+    SYSTEM_CLOCK["current_minute"] += req.minutes
+    
+    # Iterate open alerts and evaluate response thresholds
+    for task in TASKS_DB:
+        if task.status == "awaiting_ack" and task.urgency == "critical":
+            elapsed_time = SYSTEM_CLOCK["current_minute"] - task.createdMin
+            if elapsed_time > 10:
+                task.status = "at_risk"
+                
+    return {"status": "clock_updated", "current_minute": SYSTEM_CLOCK["current_minute"]}
+
+@app.post("/api/tasks/{task_id}/transfer")
+def transfer_task_to_external_queue(task_id: int, req: TransferRequest):
+    for task in TASKS_DB:
+        if task.id == task_id:
+            task.status = "transferred"
+            task.externalTransferLog = {
+                "transferredTo": req.target_queue_id,
+                "transferredBy": req.authorized_by,
+                "transferredAtMin": SYSTEM_CLOCK["current_minute"]
+            }
+            return {"status": "transferred", "task": task}
+    raise HTTPException(status_code=404, detail="Task record parameter token not found")
+
+@app.post("/api/tasks/{task_id}/resolve")
+def resolve_maternity_task(task_id: int, req: ResolutionRequest):
+    for task in TASKS_DB:
+        if task.id == task_id:
+            task.status = "done"
+            task.resolvedBy = req.resolved_by
+            task.resolutionNotes = req.notes
+            return {"status": "resolved", "task": task}
+    raise HTTPException(status_code=404, detail="Task reference id not located")

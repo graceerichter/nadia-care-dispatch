@@ -127,9 +127,13 @@ export default function App() {
    */
   const fetchTasks = async () => {
     try {
-      const res = await fetch(`http://localhost:8000/api/tasks?role=${currentRole}`);
+      const res = await fetch(`http://localhost:8000/api/report?role=${currentRole}`);
       const data = await res.json();
-      setTasks(data);
+      if (data && data.tasks) {
+        setTasks(data.tasks);
+      } else if (Array.isArray(data)) {
+        setTasks(data);
+      }
     } catch (err) {
       console.error("API Port 8000 down:", err);
     }
@@ -138,13 +142,12 @@ export default function App() {
   async function intake() {
     if (!text.trim()) return;
     try {
-      const res = await fetch("http://localhost:8000/api/webhooks/intake", {
+      const res = await fetch("http://localhost:8000/api/webhooks/athena/adt", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ source: selectedSource, text: text })
       });
       const data = await res.json();
-      addAlert({ type: "intake", msg: `📥 Webhook Dispatched. Engine routed to ${TEAM.find(m => m.id === data.allocated_to)?.name}.` });
-      if (data.task.urgency === "critical") addAlert({ type: "critical", msg: `🚨 CRITICAL SAFETY EVENT DETECTED: Escalated across internal Spruce webhooks.` });
+      addAlert({ type: "intake", msg: `📥 EHR Webhook Dispatched. Engine routed case.` });
       setText("");
       fetchTasks();
     } catch (err) {
@@ -207,7 +210,7 @@ export default function App() {
         const target = sim.filter((x) => x.id !== over.id && x.id.startsWith("nav") && x.load < avg).sort((a, b) => a.load - b.load)[0];
         if (!target || recs.length >= 3) return;
         recs.push({ taskId: t.id, summary: t.summary, urgency: t.urgency, fromId: over.id, fromName: over.name, toId: target.id, toName: target.name, reason: `${over.name} load is high (${o.load}); shift processing target to ${target.name} (${target.load}).` });
-        o.load -= URGENCY[t.urgency]?.weight || 1; target.load += URGENCY[t.urgency]?.weight || 1;
+        o.load -= UERGENCY[t.urgency]?.weight || 1; target.load += URGENCY[t.urgency]?.weight || 1;
       });
     });
     setReport({ time: now, byUrg, perMember, recs, handledPct: 100 });
@@ -221,9 +224,19 @@ export default function App() {
     setSelectedRecs([]);
   }
 
-  function advance(mins) {
+  async function advance(mins) {
     setNow((prev) => prev + mins);
     addAlert({ type: "watchdog", msg: `🕘 Simulated time advanced +${mins}m.` });
+    try {
+      await fetch("http://localhost:8000/api/tick", { 
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ minutes: mins })
+      });
+      fetchTasks();
+    } catch (err) {
+      console.error("Failed to advance backend system clock:", err);
+    }
   }
 
   const activeCriticalAlerts = tasks.filter(t => t.status !== "done" && t.status !== "transferred" && t.urgency === "critical");
@@ -395,61 +408,138 @@ export default function App() {
           </div>
         )}
 
-        {/* --- Supervisor Algorithmic Heatmaps --- */}
+        {/* --- Supervisor Algorithmic Dashboard & Data Visualization --- */}
         {tab === "supervisor-panel" && currentRole === "supervisor" && (
-          <div className="flex flex-col gap-4">
-            {!report ? (
-              <div style={{ background: c.surface, borderColor: c.line }} className="border rounded-2xl p-8 text-center shadow-sm">
-                <p className="text-sm text-gray-500 mb-3">No active system load matrix compiled for this block.</p>
-                <Btn onClick={computeReport} kind="primary">Compute Balance Matrix</Btn>
-              </div>
-            ) : (
-              <div className="flex flex-col gap-4">
-                <div style={{ background: c.surface, borderColor: c.line }} className="border rounded-2xl p-4 shadow-sm">
-                  <div className="flex justify-between items-center mb-4">
-                    <h3 style={{ ...disp, fontSize: 16 }} className="font-bold">Maternity Matrix Optimization Updates</h3>
-                    <Btn onClick={acceptSelected} kind="ok" disabled={selectedRecs.length === 0}>Accept Selected Moves</Btn>
-                  </div>
-                  {report.recs.length === 0 ? (
-                    <p className="text-sm text-gray-400 py-4 text-center border border-dashed rounded-xl">Workload split evenly. No adjustments needed.</p>
-                  ) : (
-                    <div className="flex flex-col gap-2">
-                      {report.recs.map((r) => (
-                        <div key={r.taskId} className="bg-gray-50 border rounded-xl p-3 flex items-start gap-3">
-                          <input type="checkbox" checked={selectedRecs.includes(r.taskId)} onChange={() => toggleSelection(r.taskId)} className="mt-1 cursor-pointer" />
-                          <div className="flex-1 text-xs">
-                            <div className="flex justify-between items-center font-bold mb-1">
-                              <span>Reallocate: {r.fromName} ➔ {r.toName}</span>
-                              <Chip label={URGENCY[r.urgency]?.label || r.urgency} color={URGENCY[r.urgency]?.color || c.ink} soft={URGENCY[r.urgency]?.soft || c.surfaceAlt} small />
-                            </div>
-                            <p className="text-gray-600 bg-white p-2 rounded border font-mono mb-1">"{r.summary}"</p>
-                            <p className="text-gray-500">{r.reason}</p>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
+          <div className="flex flex-col gap-6">
+            
+            {/* 1. TOP MACRO PERFORMANCE METRICS BAR */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+              <div style={{ background: c.surface, borderColor: c.line }} className="border rounded-xl p-4 shadow-xs">
+                <span className="text-[10px] font-bold uppercase tracking-wider text-gray-400 block mb-1">Active Case Backlog</span>
+                <div className="flex justify-between items-baseline">
+                  <span style={{ color: c.ink, ...disp }} className="text-2xl font-bold">{localOpenTasks.length}</span>
+                  <span className="text-xs font-semibold text-emerald-600 bg-emerald-50 px-1.5 py-0.5 rounded">Live Stack</span>
                 </div>
+              </div>
 
-                <div style={{ background: c.surface, borderColor: c.line }} className="border rounded-2xl p-4 shadow-sm">
-                  <h3 style={{ ...disp, fontSize: 16 }} className="font-bold mb-3">Maternity Navigator Cognitive Caseload Load</h3>
-                  <div className="flex flex-col gap-3">
-                    {report.perMember.map(m => (
-                      <div key={m.id} className="flex items-center gap-4 text-sm font-semibold">
-                        <div className="w-48 truncate">
-                          <span className="block text-gray-900">{m.name}</span>
-                          <span className="text-[10px] text-gray-400 font-bold uppercase">{m.role}</span>
-                        </div>
-                        <div className="flex-1 bg-gray-200 h-3 rounded-full overflow-hidden">
-                          <div style={{ width: `${Math.min(100, m.load * 12)}%`, background: m.load > 6 ? c.red : c.teal }} className="h-full transition-all" />
-                        </div>
-                        <span className="w-16 text-right text-xs font-mono bg-gray-100 p-1 rounded">Load: {m.load}</span>
-                      </div>
-                    ))}
-                  </div>
+              <div style={{ background: c.surface, borderColor: c.line }} className="border rounded-xl p-4 shadow-xs">
+                <span className="text-[10px] font-bold uppercase tracking-wider text-gray-400 block mb-1">High/Critical Urgency Risk</span>
+                <div className="flex justify-between items-baseline">
+                  <span style={{ color: c.red, ...disp }} className="text-2xl font-bold">
+                    {tasks.filter(t => t.status !== "done" && t.status !== "transferred" && (t.urgency === "critical" || t.urgency === "high")).length}
+                  </span>
+                  <span style={{ backgroundColor: c.redSoft, color: c.red }} className="text-[10px] font-extrabold uppercase px-1.5 py-0.5 rounded">Action Required</span>
                 </div>
               </div>
-            )}
+
+              <div style={{ background: c.surface, borderColor: c.line }} className="border rounded-xl p-4 shadow-xs">
+                <span className="text-[10px] font-bold uppercase tracking-wider text-gray-400 block mb-1">Regional Split (GA / TX / FL)</span>
+                <div className="flex gap-2 mt-2 text-xs font-mono font-bold">
+                  <span className="bg-gray-100 px-1.5 py-0.5 rounded text-gray-700">GA: {tasks.filter(t => t.status !== "done" && t.market === "GA").length}</span>
+                  <span className="bg-gray-100 px-1.5 py-0.5 rounded text-gray-700">TX: {tasks.filter(t => t.status !== "done" && t.market === "TX").length}</span>
+                  <span className="bg-gray-100 px-1.5 py-0.5 rounded text-gray-700">FL: {tasks.filter(t => t.status !== "done" && t.market === "FL").length}</span>
+                </div>
+              </div>
+
+              <div style={{ background: c.surface, borderColor: c.line }} className="border rounded-xl p-4 shadow-xs">
+                <span className="text-[10px] font-bold uppercase tracking-wider text-gray-400 block mb-1">Closed Audit Handoffs</span>
+                <div className="flex justify-between items-baseline">
+                  <span style={{ color: c.teal, ...disp }} className="text-2xl font-bold">{auditLogs.length}</span>
+                  <span className="text-xs font-semibold text-purple-600 bg-purple-50 px-1.5 py-0.5 rounded">Immutable Ledger</span>
+                </div>
+              </div>
+            </div>
+
+            {/* 2. DUAL-COLUMN INSIGHTS LAYOUT */}
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+              
+              {/* Left Side: Dynamic SDoH Bottleneck Tracker */}
+              <div lg-col-span-1 style={{ background: c.surface, borderColor: c.line }} className="border rounded-2xl p-4 shadow-sm h-fit">
+                <h3 style={{ ...disp, fontSize: 15 }} className="font-bold text-gray-900 mb-3">SDoH Care Bottleneck Vectors</h3>
+                <div className="flex flex-col gap-2.5">
+                  {Object.keys(CATEGORY_LABEL).map((key) => {
+                    const count = localOpenTasks.filter((t) => t.category === key).length;
+                    const pct = localOpenTasks.length ? (count / localOpenTasks.length) * 100 : 0;
+                    return (
+                      <div key={key} className="text-xs font-semibold">
+                        <div className="flex justify-between text-gray-700 mb-1">
+                          <span>{CATEGORY_LABEL[key]}</span>
+                          <span className="font-mono text-gray-400">{count} open cases</span>
+                        </div>
+                        <div className="w-full bg-gray-100 h-2 rounded-full overflow-hidden">
+                          <div style={{ width: `${pct}%`, background: c.plum }} className="h-full rounded-full transition-all" />
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Right Side: Rebalance Matrix Suggestions Panel */}
+              <div className="lg:col-span-2 flex flex-col gap-6">
+                {!report ? (
+                  <div style={{ background: c.surface, borderColor: c.line }} className="border rounded-2xl p-8 text-center shadow-sm">
+                    <p className="text-sm text-gray-500 mb-3">Caseload rebalancing matrix calculations have not been processed for this cycle interval.</p>
+                    <Btn onClick={computeReport} kind="primary">Initialize Dynamic Load Balancing Matrix</Btn>
+                  </div>
+                ) : (
+                  <div className="flex flex-col gap-6">
+                    {/* Optimization proposal list card */}
+                    <div style={{ background: c.surface, borderColor: c.line }} className="border rounded-2xl p-4 shadow-sm">
+                      <div className="flex justify-between items-center mb-4">
+                        <div>
+                          <h3 style={{ ...disp, fontSize: 15 }} className="font-bold">Algorithmic Load Balancer Output</h3>
+                          <p className="text-[11px] text-gray-400 font-medium">Automatic system reallocations mapped to equalize shift load factors.</p>
+                        </div>
+                        <Btn onClick={acceptSelected} kind="ok" disabled={selectedRecs.length === 0}>Accept Selected Move Tokens</Btn>
+                      </div>
+                      {report.recs.length === 0 ? (
+                        <p className="text-xs text-gray-400 py-6 text-center border border-dashed rounded-xl font-medium">Caseload variant metrics balanced within acceptable standard deviations. No shifts proposed.</p>
+                      ) : (
+                        <div className="flex flex-col gap-2.5">
+                          {report.recs.map((r) => (
+                            <div key={r.taskId} className="bg-gray-50 border border-gray-100 rounded-xl p-3 flex items-start gap-3 hover:bg-gray-100 transition-colors">
+                              <input type="checkbox" checked={selectedRecs.includes(r.taskId)} onChange={() => toggleSelection(r.taskId)} className="mt-0.5 cursor-pointer" style={{ width: 14, height: 14 }} />
+                              <div className="flex-1 text-xs">
+                                <div className="flex justify-between items-center font-bold mb-1">
+                                  <span style={{ color: c.ink }}>Transfer Token: {r.fromName} ➔ {r.toName}</span>
+                                  <Chip label={URGENCY[r.urgency]?.label || r.urgency} color={URGENCY[r.urgency]?.color || c.ink} soft={URGENCY[r.urgency]?.soft || c.surfaceAlt} small />
+                                </div>
+                                <p className="text-gray-600 bg-white p-2 rounded border border-gray-200 font-mono text-[11px] mb-1">“{r.summary}”</p>
+                                <p className="text-[11px] font-bold text-purple-800">💡 Strategy: {r.reason}</p>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Caseload Heatmap Bar list */}
+                    <div style={{ background: c.surface, borderColor: c.line }} className="border rounded-2xl p-4 shadow-sm">
+                      <h3 style={{ ...disp, fontSize: 15 }} className="font-bold mb-3">Maternity Roster Caseload Cognitive Load Vectors</h3>
+                      <div className="flex flex-col gap-4">
+                        {report.perMember.map(m => (
+                          <div key={m.id} className="flex items-center gap-4 text-sm font-semibold">
+                            <div className="w-44 truncate">
+                              <span style={{ color: c.ink }} className="block text-xs font-bold">{m.name}</span>
+                              <span className="text-[9px] text-gray-400 font-extrabold uppercase tracking-wider block">{m.role}</span>
+                            </div>
+                            <div className="flex-1 bg-gray-100 h-2.5 rounded-full overflow-hidden border border-gray-50">
+                              <div style={{ width: `${Math.min(100, m.load * 12)}%`, background: m.load > 6 ? c.red : m.load > 3 ? c.amber : c.teal }} className="h-full transition-all rounded-full" />
+                            </div>
+                            <span style={{ background: m.load > 6 ? c.redSoft : m.load > 3 ? c.amberSoft : '#e3efe7', color: m.load > 6 ? c.red : m.load > 3 ? c.amber : '#3c7b5c' }} className="w-20 text-center text-[11px] font-mono font-bold p-1 rounded-md">
+                              Factor Score: {m.load}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
+                  </div>
+                )}
+              </div>
+            </div>
+
           </div>
         )}
 
