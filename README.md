@@ -1,4 +1,6 @@
-# Nadia Care · Dispatch
+# Nadia Care · Maternity Navigator Task Triage Layer Prototype v1.0
+
+Video Walkthrough: https://drive.google.com/file/d/1HqI_RgvwasrVIdfKPGidR4N-xJUdyoZ3/view?usp=sharing
 
 A capacity-aware task-routing prototype for a maternal-health care team:
 intake → AI triage → auto-assignment by role / availability / weighted load →
