@@ -181,7 +181,7 @@ export default function App() {
     try {
       await fetch(`http://localhost:8000/api/tasks/${resolvingTask.id}/resolve`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ authorized_by: operatorName, notes: resolutionNotes })
+        body: JSON.stringify({ resolved_by: operatorName, notes: resolutionNotes })
       });
       addAlert({ type: "resolved", msg: `✅ Audit Closed on File Record ${resolvingTask.member}.` });
       setResolvingTask(null);
@@ -210,7 +210,7 @@ export default function App() {
         const target = sim.filter((x) => x.id !== over.id && x.id.startsWith("nav") && x.load < avg).sort((a, b) => a.load - b.load)[0];
         if (!target || recs.length >= 3) return;
         recs.push({ taskId: t.id, summary: t.summary, urgency: t.urgency, fromId: over.id, fromName: over.name, toId: target.id, toName: target.name, reason: `${over.name} load is high (${o.load}); shift processing target to ${target.name} (${target.load}).` });
-        o.load -= UERGENCY[t.urgency]?.weight || 1; target.load += URGENCY[t.urgency]?.weight || 1;
+        o.load -= URGENCY[t.urgency]?.weight || 1; target.load += URGENCY[t.urgency]?.weight || 1;
       });
     });
     setReport({ time: now, byUrg, perMember, recs, handledPct: 100 });
@@ -258,7 +258,7 @@ export default function App() {
             <span>🚨 HIGH CRITICAL RISK ALERT (PORTAL LOCK):</span>
             <span className="underline truncate max-w-xl">"{activeCriticalAlerts[0].member}: {activeCriticalAlerts[0].summary}"</span>
           </div>
-          <Btn onClick={() => setResolvingTask(activeCriticalAlerts[0])} kind="primary">Resolve Immediate</Btn>
+          <Btn onClick={() => setResolvingTask(activeCriticalAlerts[0])} kind="primary">Resolve Immediately</Btn>
         </div>
       )}
 
@@ -266,8 +266,8 @@ export default function App() {
       <header style={{ background: c.plum, color: "#fff" }} className="px-5 py-3 shadow-md">
         <div className="max-w-5xl mx-auto flex flex-wrap items-center justify-between gap-3">
           <div>
-            <div style={{ ...disp, fontSize: 20 }} className="font-semibold">Nadia Care · Operations Console</div>
-            <div style={{ color: c.plumSoft, fontSize: 11 }} className="uppercase tracking-wide font-medium">Full-Stack Live Connected Maternity Navigation Hub</div>
+            <div style={{ ...disp, fontSize: 20 }} className="font-semibold">Care Operations Console</div>
+            <div style={{ color: c.plumSoft, fontSize: 11 }} className="uppercase tracking-wide font-medium">Full-Stack Live Connected Care Navigation Hub</div>
           </div>
           <div className="flex items-center gap-4">
             <div className="flex items-center gap-2">
@@ -322,7 +322,7 @@ export default function App() {
                     <label className="block text-[10px] uppercase font-bold tracking-wider text-gray-400 mb-1">Message Body:</label>
                     <textarea value={text} onChange={(e) => setText(e.target.value)} rows={3} placeholder="Enter message text here..." style={{ borderColor: c.line, background: c.surfaceAlt }} className="w-full text-xs rounded-xl p-3 outline-none resize-none font-mono" />
                   </div>
-                  <Btn onClick={intake} kind="primary" disabled={!text.trim()}>Deploy to Maternity Roster</Btn>
+                  <Btn onClick={intake} kind="primary" disabled={!text.trim()}>Deploy to Navigator Queue</Btn>
                 </div>
               )}
               
@@ -391,7 +391,7 @@ export default function App() {
                         {["assigned", "in_progress", "at_risk", "awaiting_ack"].includes(t.status) && (
                           <>
                             <Btn onClick={() => setTransferringTask(t)} kind="ghost">➡️ Transfer Queue</Btn>
-                            <Btn onClick={() => setResolvingTask(t)} kind="primary">Resolve Done</Btn>
+                            <Btn onClick={() => setResolvingTask(t)} kind="primary">Done</Btn>
                           </>
                         )}
                       </div>

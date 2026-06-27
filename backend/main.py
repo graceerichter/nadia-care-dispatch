@@ -79,6 +79,7 @@ def get_active_queue(role: Optional[str] = "supervisor"):
     return [t for t in TASKS_DB if t.assignedTo == role]
 
 # ALIGNED GATEWAY: Intercepts Athena EHR webhooks sent from the React intake form
+@app.post("/api/triage")
 @app.post("/api/webhooks/athena/adt")
 @app.post("/api/webhooks/intake")
 def handle_webhook_intake(payload: InboundPayload):
